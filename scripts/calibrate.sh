@@ -1,37 +1,25 @@
-#!/bin/bash
-source ~/ws/lerobot/.venv/bin/activate
-export HF_TOKEN=your_token_here
-export HF_USER=witsense-ai
-export ROBOT_LEADER_PORT=/dev/ttyACM0
-export ROBOT_FOLLOWER_PORT=/dev/ttyACM1
-export TASK_NAME=tidyup-place
-export TASK_DESC="pickup the object and place it in the cup"
-export DATASET_REPO=${HF_USER}/so101_${TASK_NAME}
-export POLICY_REPO=${HF_USER}/so101_${TASK_NAME}_policy
-export PRETRAINED_CKPT=${HF_USER}/so101_${TASK_NAME}_pi_fast
-export TRAIN_OUTPUT_DIR=${HF_USER}/so101_${TASK_NAME}_train
-export HF_LEROBOT_HOME=/home/suva/ws/lerobot/so101-custom-training
-export JOB_NAME=act_so101_${TASK_NAME}
-export DISPLAY=localhost:0.0
-echo "Starting calibration for task: $TASK_NAME"
-echo "Task description: $TASK_DESC"
-echo "Using dataset repo: $DATASET_REPO"
-echo "Using policy repo: $POLICY_REPO"
-echo "Using pretrained checkpoint: $PRETRAINED_CKPT"    
-echo "Using leader port: $ROBOT_LEADER_PORT"
-echo "Using follower port: $ROBOT_FOLLOWER_PORT"
-echo "Calibrating leader arm (right_leader) on $ROBOT_LEADER_PORT..."
-lerobot-calibrate \
-  --teleop.type=so101_leader \
-  --teleop.port=$ROBOT_LEADER_PORT \
-  --teleop.id=right_leader
+#!/usr/bin/env bash
+# Calibrate both SO-101 arms. Run once per physical setup, before recording.
+#
+# Calibration defines the UNITS of every joint value in your dataset and policy.
+# Re-calibrating differently after training moves the policy's outputs into a
+# different frame and it will miss the object — so back the files up and keep them.
+set -euo pipefail
 
-echo "Calibrating follower arm (left_follower) on $ROBOT_FOLLOWER_PORT..."
-lerobot-calibrate \
-  --robot.type=so101_follower \
-  --robot.port=$ROBOT_FOLLOWER_PORT \
-  --robot.id=left_follower
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+[ -f .env ] || { echo "ERROR: no .env. Run: cp .env.example .env" >&2; exit 1; }
+set -a; source .env; set +a
+source "${LEROBOT_VENV:-$HOME/.venvs/lerobot}/bin/activate"
 
-echo "Backing up calibration..."
-cp -r ~/.cache/huggingface/lerobot/ ~/lerobot-calibration-backup/
-echo "Backup saved to ~/lerobot-calibration-backup/"
+echo "Leader on $ROBOT_LEADER_PORT ..."
+lerobot-calibrate --teleop.type=so101_leader --teleop.port="$ROBOT_LEADER_PORT" --teleop.id="$LEADER_ID"
+
+echo "Follower on $ROBOT_FOLLOWER_PORT ..."
+lerobot-calibrate --robot.type=so101_follower --robot.port="$ROBOT_FOLLOWER_PORT" --robot.id="$FOLLOWER_ID"
+
+mkdir -p calibration
+cp -r ~/.cache/huggingface/lerobot/calibration/* calibration/ 2>/dev/null || true
+echo ""
+echo "Backed up to $ROOT_DIR/calibration/ — keep these alongside the dataset."
+echo "Next, sanity-check teleoperation (see ACT_PIPELINE.md section 3) before recording."

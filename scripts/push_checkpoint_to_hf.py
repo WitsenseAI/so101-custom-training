@@ -1,42 +1,63 @@
 #!/usr/bin/env python3
+"""Push a trained LeRobot policy checkpoint to the Hugging Face Hub.
+
+    export HF_TOKEN=hf_...
+    python scripts/push_checkpoint_to_hf.py witsense-ai/so101_ring_act outputs/train/<run>/checkpoints/last
+
+Point it at a checkpoint *step* directory (or straight at a pretrained_model/ dir).
+Use this rather than training with PUSH_TO_HUB=true when you want to choose the
+checkpoint by robot success rate instead of automatically shipping the last step.
+"""
+
+import argparse
 import os
 import sys
 from pathlib import Path
-from huggingface_hub import HfApi, login
 
-if len(sys.argv) < 3:
-    print("Usage: python3 push_checkpoint_to_hf.py <repo_id> <checkpoint_step_dir>")
-    print("")
-    print("Pass the step directory (pretrained_model is found automatically):")
-    print("  python3 push_checkpoint_to_hf.py witsense-ai/so101_vla_jepa_v3 /workspace/vla_jepa_training_v3/checkpoints/010000")
-    print("  python3 push_checkpoint_to_hf.py witsense-ai/so101_act_fewshot  /workspace/act_training/checkpoints/last")
-    sys.exit(1)
+from huggingface_hub import HfApi
 
-repo_id = sys.argv[1]
-checkpoint_dir = Path(sys.argv[2])
 
-# pretrained_model/ contains policy weights + preprocessor.json + postprocessor.json
-pretrained_dir = checkpoint_dir / "pretrained_model"
-if not pretrained_dir.is_dir():
-    # caller passed pretrained_model directly
-    pretrained_dir = checkpoint_dir
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("repo_id", help="Target model repo, e.g. witsense-ai/so101_ring_act")
+    p.add_argument("checkpoint", type=Path, help="Checkpoint step dir, or a pretrained_model dir")
+    p.add_argument("--public", action="store_true", help="Create the repo public (default private)")
+    p.add_argument("--message", default=None, help="Commit message")
+    args = p.parse_args()
 
-if not pretrained_dir.is_dir():
-    print(f"ERROR: pretrained_model not found in {checkpoint_dir}")
-    sys.exit(1)
+    # None makes huggingface_hub fall back to a cached `hf auth login`, so this works
+    # whether the token comes from .env or from a previous login on the machine.
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HF_HUB_TOKEN") or None
+    try:
+        who = HfApi(token=token).whoami()["name"]
+    except Exception:
+        print(
+            "ERROR: no usable Hugging Face credentials.\n"
+            "  Set HF_TOKEN in .env, or run: hf auth login",
+            file=sys.stderr,
+        )
+        return 2
 
-token = os.environ.get("HF_TOKEN")
-if not token:
-    print("ERROR: HF_TOKEN not set")
-    sys.exit(1)
+    # A checkpoint dir holds pretrained_model/ (weights + pre/postprocessor); accept either.
+    model_dir = args.checkpoint / "pretrained_model"
+    if not model_dir.is_dir():
+        model_dir = args.checkpoint
+    if not (model_dir / "config.json").is_file():
+        print(f"ERROR: no config.json under {model_dir} — not a policy checkpoint.", file=sys.stderr)
+        return 3
 
-login(token=token)
-api = HfApi(token=token)
-api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
-api.upload_folder(
-    folder_path=str(pretrained_dir),
-    repo_id=repo_id,
-    repo_type="model",
-    commit_message=f"Push checkpoint from {checkpoint_dir.name}"
-)
-print(f"✓ Pushed to https://huggingface.co/{repo_id}")
+    print(f"Pushing as {who} -> {args.repo_id} ({'public' if args.public else 'private'})")
+    api = HfApi(token=token)
+    api.create_repo(repo_id=args.repo_id, repo_type="model", private=not args.public, exist_ok=True)
+    api.upload_folder(
+        folder_path=str(model_dir),
+        repo_id=args.repo_id,
+        repo_type="model",
+        commit_message=args.message or f"Upload policy from {args.checkpoint.name}",
+    )
+    print(f"Pushed {model_dir} -> https://huggingface.co/{args.repo_id}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

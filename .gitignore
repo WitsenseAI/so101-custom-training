@@ -19,3 +19,9 @@ VM_QUICKSTART.md
 scripts/outputs/captured_images/opencv__dev_video0.png
 scripts/outputs/captured_images/opencv__dev_video2.png
 scripts/outputs/captured_images/opencv__dev_video4.png
+
+# Keep the template, never the real thing
+!.env.example
+
+# FUSE keeps deleted-but-open files around (e.g. a script a running job holds open)
+.fuse_hidden*
