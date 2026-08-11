@@ -47,24 +47,24 @@ from huggingface_hub import login, HfApi
 login(token="$HF_TOKEN")
 
 api = HfApi(token="$HF_TOKEN")
-refs = api.list_repo_refs("witsense-ai/so101_pick_and_place_ring", repo_type="dataset")
+refs = api.list_repo_refs("witsense-ai/so101_pick_and_place_ring_33", repo_type="dataset")
 existing_tags = [t.name for t in refs.tags]
 if "v3.0" not in existing_tags:
-    api.create_tag("witsense-ai/so101_pick_and_place_ring", tag="v3.0", repo_type="dataset")
+    api.create_tag("witsense-ai/so101_pick_and_place_ring_33", tag="v3.0", repo_type="dataset")
     print("  ✓ Tag v3.0 created")
 else:
     print(f"  ✓ Tags: {existing_tags}")
 
 from huggingface_hub import snapshot_download
-snapshot_download("witsense-ai/so101_pick_and_place_ring", repo_type="dataset", token="$HF_TOKEN")
+snapshot_download("witsense-ai/so101_pick_and_place_ring_33", repo_type="dataset", token="$HF_TOKEN")
 print("  ✓ Dataset ready")
 EOF
 
-DATASET_CACHE="$HF_HOME/hub/datasets--witsense-ai--so101_pick_and_place_ring/snapshots"
+DATASET_CACHE="$HF_HOME/hub/datasets--witsense-ai--so101_pick_and_place_ring_33/snapshots"
 SNAPSHOT=$(ls "$DATASET_CACHE" | head -1)
 mkdir -p "$HF_HOME/lerobot/witsense-ai"
-rm -f "$HF_HOME/lerobot/witsense-ai/so101_pick_and_place_ring"
-ln -sf "$DATASET_CACHE/$SNAPSHOT" "$HF_HOME/lerobot/witsense-ai/so101_pick_and_place_ring"
+rm -f "$HF_HOME/lerobot/witsense-ai/so101_pick_and_place_ring_33"
+ln -sf "$DATASET_CACHE/$SNAPSHOT" "$HF_HOME/lerobot/witsense-ai/so101_pick_and_place_ring_33"
 echo "✓ Dataset symlinked"
 
 echo ""
@@ -72,7 +72,7 @@ echo "[3/3] Starting ACT training: $STEPS steps, batch_size=$BATCH_SIZE"
 echo ""
 
 lerobot-train \
-  --dataset.repo_id=witsense-ai/so101_pick_and_place_ring \
+  --dataset.repo_id=witsense-ai/so101_pick_and_place_ring_33 \
   --policy.type=act \
   --policy.repo_id=witsense-ai/so101_act_fewshot \
   --policy.device=cuda \

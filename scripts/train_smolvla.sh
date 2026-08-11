@@ -8,8 +8,7 @@ OUTPUT_DIR="outputs/train/smolvla"
 STEPS=100000
 CHECKPOINT_DIR="$OUTPUT_DIR/checkpoints"
 
-# Find local dataset
-DATASET_ROOT=$(find ~/ws/lerobot/so101-custom-training/witsense-ai -name "info.json" -type f | head -1 | xargs dirname | xargs dirname)
+DATASET_ROOT=~/ws/lerobot/so101-custom-training/witsense-ai/so101_pick_and_place_ring_33
 
 if [ ! -d "$DATASET_ROOT" ]; then
   echo "Error: Dataset not found in witsense-ai folder"
