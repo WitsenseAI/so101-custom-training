@@ -6,9 +6,9 @@
 #
 # Keep a hand on the e-stop for the first rollout: a fresh policy can drive into the table.
 #
-# The camera resolutions here MUST match what the policy was trained on. Check with:
-#   python -c "import json,urllib.request as u; \
-#     print(json.load(u.urlopen('https://huggingface.co/<policy>/resolve/main/config.json'))['input_features'])"
+# Camera resolutions are read from the policy's own config.json rather than from .env:
+# a policy trained with mismatched camera sizes (e.g. top 640x480 + wrist 1280x720) will
+# silently receive the wrong input shape if you guess a single size for both.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,13 +20,40 @@ source "${LEROBOT_VENV:-$HOME/.venvs/lerobot}/bin/activate"
 DATASET_NAME="${DATASET_REPO##*/}"
 POLICY_PATH="${1:-${POLICY_REPO:-$HF_ORG/${DATASET_NAME}_act}}"
 EVAL_REPO="${EVAL_REPO:-$HF_ORG/eval_${DATASET_NAME}}"
-: "${CAMERA_WIDTH:=640}"; : "${CAMERA_HEIGHT:=480}"
 : "${EVAL_EPISODES:=10}"; : "${EPISODE_TIME_S:=25}"
 
-CAMERAS="{
-  top:   {type: opencv, index_or_path: $TOP_CAMERA,   width: $CAMERA_WIDTH, height: $CAMERA_HEIGHT, fps: 30},
-  wrist: {type: opencv, index_or_path: $WRIST_CAMERA, width: $CAMERA_WIDTH, height: $CAMERA_HEIGHT, fps: 30}
-}"
+# Ask the policy what image shapes it expects, and open each camera at exactly that size.
+CAMERAS=$(TOP_CAMERA="$TOP_CAMERA" WRIST_CAMERA="$WRIST_CAMERA" python - "$POLICY_PATH" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+local = src / "config.json"
+if not local.is_file():
+    local = src / "pretrained_model" / "config.json"
+if local.is_file():
+    cfg = json.loads(local.read_text())
+else:  # a Hub repo id
+    from huggingface_hub import hf_hub_download
+    cfg = json.loads(Path(hf_hub_download(str(src), "config.json")).read_text())
+
+devices = {"top": os.environ["TOP_CAMERA"], "wrist": os.environ["WRIST_CAMERA"]}
+entries = []
+for key, feat in cfg["input_features"].items():
+    if "image" not in key:
+        continue
+    name = key.rsplit(".", 1)[-1]           # observation.images.top -> top
+    if name not in devices:
+        sys.exit(f"policy expects camera '{name}', which is not configured in .env")
+    _, h, w = feat["shape"]
+    entries.append(f"{name}: {{type: opencv, index_or_path: {devices[name]}, "
+                   f"width: {w}, height: {h}, fps: 30}}")
+if not entries:
+    sys.exit("policy declares no image inputs")
+print("{" + ", ".join(entries) + "}")
+PY
+)
+echo "  cameras   $CAMERAS"
 
 echo "  policy    $POLICY_PATH"
 echo "  rollouts  $EVAL_EPISODES -> $EVAL_REPO"
