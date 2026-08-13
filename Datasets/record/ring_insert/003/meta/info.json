@@ -1,0 +1,129 @@
+{
+    "codebase_version": "v2.1",
+    "robot_type": null,
+    "total_episodes": 0,
+    "total_frames": 0,
+    "total_tasks": 0,
+    "total_videos": 0,
+    "total_chunks": 0,
+    "chunks_size": 1000,
+    "fps": 30,
+    "splits": {},
+    "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+    "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+    "features": {
+        "observation.state": {
+            "dtype": "float32",
+            "shape": [
+                6
+            ],
+            "names": [
+                "shoulder_pan",
+                "shoulder_lift",
+                "elbow_flex",
+                "wrist_flex",
+                "wrist_roll",
+                "gripper"
+            ]
+        },
+        "action": {
+            "dtype": "float32",
+            "shape": [
+                6
+            ],
+            "names": [
+                "shoulder_pan",
+                "shoulder_lift",
+                "elbow_flex",
+                "wrist_flex",
+                "wrist_roll",
+                "gripper"
+            ]
+        },
+        "observation.top_depth": {
+            "dtype": "uint16",
+            "shape": [
+                480,
+                640
+            ],
+            "names": [
+                "height",
+                "width"
+            ],
+            "info": {
+                "unit": "millimeters",
+                "range_mm": [
+                    0,
+                    65535
+                ],
+                "range_m": [
+                    0.0,
+                    65.535
+                ],
+                "precision_mm": 1,
+                "conversion": "depth_meters = uint16_value / 1000.0"
+            }
+        },
+        "observation.images.top_rgb": {
+            "dtype": "video",
+            "shape": [
+                480,
+                640,
+                3
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ]
+        },
+        "observation.images.wrist_rgb": {
+            "dtype": "video",
+            "shape": [
+                480,
+                640,
+                3
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ]
+        },
+        "timestamp": {
+            "dtype": "float32",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "frame_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "episode_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "task_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        }
+    }
+}

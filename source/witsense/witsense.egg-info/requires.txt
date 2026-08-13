@@ -1,0 +1,9 @@
+psutil
+GitPython
+omegaconf
+scipy
+plotly
+pyserial
+deepdiff
+tqdm
+pynput
