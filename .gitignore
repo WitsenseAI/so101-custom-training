@@ -12,7 +12,6 @@ env.local.template
 ROBOT_SETUP.md
 COMPLETE_TRAINING_WORKFLOW.md
 .gitignore
-.gitignore
 DATASET_PREPARATION.md
 LOCAL_TRAINING_GUIDE.md
 VM_QUICKSTART.md
@@ -23,6 +22,13 @@ VM_QUICKSTART.md
 
 # FUSE keeps deleted-but-open files around (e.g. a script a running job holds open)
 .fuse_hidden*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
 
 # C++
 **/cmake-build*/
