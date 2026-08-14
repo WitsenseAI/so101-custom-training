@@ -170,47 +170,6 @@ offset still points where it did. `self.robot` is the attribute name
 silently. The id deliberately has no `Bi` in it: `dataset_record.py` keys off that substring
 to choose the 6-dim single-arm dataset schema over the 12-dim one.
 
-### Geometry
-
-Measured from the assets, not guessed:
-
-| | |
-|---|---|
-| Table038 top | **z = 0.521** (x −0.522…0.468, y −0.400…0.400) |
-| ring | 100 mm outside, 90 mm hole (5 mm wall), 24 mm tall, origin at **centre** → rests at 0.533 |
-| ghost | 62 × 70 mm, 48 mm tall, origin at its **base** → rests at 0.521 |
-| robot | lowest geometry is 30 mm above its origin → origin goes at 0.491 |
-
-| field | value | why |
-|---|---|---|
-| `ring_pos` | `(0.16, -0.05, 0.533)` | 0.21 m from the base, on the table |
-| `ghost_pos` | `(0.30, -0.03, 0.521)` | 0.23 m from the base, 0.14 m clear of the ring |
-| `ring_xy_jitter` | `0.04` | worst-case spawn still 0.24 m from base, 0.10 m off the ghost |
-| `ghost_kinematic` | `True` | pinned; a free ghost is knocked over every early attempt |
-| `success_xy_tol` | `0.015` | slack around the 5 mm the geometry actually allows |
-| `success_z_max` | `0.551` | ring centre is 0.533 down on the table, 0.581 perched on the ghost |
-
-The insertion clearance is 10 mm per side: a 90 mm hole over a 70 mm ghost. Tight but
-demonstrable. `roundtape.usda` is a generated ring — 64 angular segments, 4 points each,
-ordered outer+z / outer−z / inner−z / inner+z. To resize it, regenerate `points`,
-`extent`, `physics:mass` and `physics:diagonalInertia` together; mass follows the wall
-volume at 948.5 kg/m³ and the inertia is a hollow cylinder,
-`Ixx=Iyy=(1/12)m(3(ro²+ri²)+h²)`, `Izz=½m(ro²+ri²)`. Leaving the inertia stale makes the
-ring tumble wrongly without any error.
-
-The arm base is at `(0.23, -0.25)` rotated 180° about z, so it reaches out along **+y**
-over both objects. The top camera keeps the bimanual task's rotation and moves only its
-position, by the offset that recentres the same camera→workspace vector on the new
-single-arm workspace — so the viewing angle is the one that setup was authored with.
-| `table_texture` | `real_mat.png` | orange mat matching the real setup; `None` keeps the scene's white table |
-
-The bedroom table ships white, which leaves a white ghost and a pale ring invisible on it.
-`table_texture_id` indexes `Assets/textures/surface/<id>.png`, applied to the same shader
-the bimanual task's randomiser targets. 76 is the darkest of the 100 — a near-flat neutral
-grey, mean rgb 63/62/59 against the white table's ~255. 10 and 51 are warm wood tones.
-Fixed, not randomised. If the ring still reads too pale, its own colour is one line:
-`inputs:diffuseColor = (0.88, 0.74, 0.44)` in `Assets/objects/ring/roundtape.usda`.
-
 ## Pipeline: demonstrations → policy → rollouts
 
 The whole loop, in order. Every step has a check, because several of these failed
@@ -227,7 +186,8 @@ not hypotheticals.
 7 evaluate                 run_eval.py                   -> success rate + progress
 8 collect rollouts         run_eval.py --record          -> outputs/rollouts_runN
 9 filter                   filter_rollouts.py            -> keep successes / near-misses
-10 merge + retrain         back to step 4                (filtered behaviour cloning)
+10 merge + retrain         merge_datasets -> steps 5,6,7 (filtered behaviour cloning)
+                           then back to step 8 for the next round
 ```
 
 `$V` below is the ACT venv, `/media/zarus101/ssd2/WITSENSE/lerobot-venv`. Steps 1, 7 and 8
@@ -298,49 +258,40 @@ Converts **in place**: the v3.0 result takes the original path, the v2.1 origina
 ### 4. Merge batches
 
 ```bash
-$V/bin/python - <<'PY'
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.dataset_tools import merge_datasets
-parts = [LeRobotDataset(repo_id=f"local/{n}", root=f"Datasets/record/ring_insert/{n}")
-         for n in ("002", "003")]
-merged = merge_datasets(parts, output_repo_id="witsense-ai/synthetic_so101_ring_insert",
-                        output_dir="Datasets/record/ring_insert/merged_40")
-print(merged.num_episodes, "episodes,", merged.num_frames, "frames")
-PY
+$V/bin/python scripts/merge_datasets.py \
+    --out Datasets/record/ring_insert/merged_40 \
+    --repo-id witsense-ai/synthetic_so101_ring_insert \
+    Datasets/record/ring_insert/002 Datasets/record/ring_insert/003
 ```
+
+Refuses to overwrite an existing `--out`, and checks the episode count adds up. Inputs
+must already be v3.0 (step 3) and must share identical feature metadata — see the note at
+the end of step 10.
 
 ### 5. Push to the Hub
 
 ```bash
-export HF_TOKEN=$(cat ~/.cache/huggingface/token)
-$V/bin/python - <<'PY'
-import os
-from huggingface_hub import HfApi
-api = HfApi(token=os.environ["HF_TOKEN"])
-REPO = "witsense-ai/synthetic_so101_ring_insert"
-api.upload_folder(folder_path="Datasets/record/ring_insert/merged_40",
-                  repo_id=REPO, repo_type="dataset",
-                  delete_patterns=["data/**", "videos/**", "meta/**"])
-refs = api.list_repo_refs(REPO, repo_type="dataset")
-main = refs.branches[0].target_commit
-for t in refs.tags:
-    if t.name == "v3.0" and t.target_commit != main:
-        api.delete_tag(REPO, tag="v3.0", repo_type="dataset")
-        api.create_tag(REPO, tag="v3.0", revision="main", repo_type="dataset")
-PY
+$V/bin/python scripts/push_dataset_to_hf.py \
+    witsense-ai/synthetic_so101_ring_insert \
+    Datasets/record/ring_insert/merged_40
 ```
 
-Two things bite here:
+Private by default; `--public` to change that. Two things bite here, and the script
+handles both:
 
-- **`delete_patterns`** — v3.0 chunk filenames do not overlap v2.1 ones, so a plain upload
-  leaves both layouts in the repo and the loader trips over the old one.
+- **Deleting the old layout.** v3.0 chunk filenames do not overlap v2.1 ones, so a plain
+  upload leaves both in the repo and the loader trips over the old one. It uploads with
+  `delete_patterns=["data/**", "videos/**", "meta/**"]`. `--keep-existing` skips that,
+  which is only safe when the remote is already the same format version.
 - **The version tag.** lerobot reads the dataset format from a **git tag**, not from
   `meta/info.json`. A repo whose files are v3.0 but whose tag says `v2.1` still fails with
-  `BackwardCompatibilityError`, and no amount of re-uploading fixes it.
+  `BackwardCompatibilityError`, and no amount of re-uploading fixes it. The script tags
+  whatever `info.json` says and moves a stale tag, leaving a correct one untouched.
 
-`HF_TOKEN` is set explicitly because `.env` points `HF_HOME` at the dataset cache, a
-directory with no token in it, so a perfectly good `hf auth login` goes unseen. A private
-dataset then fails with a misleading `401 … Repository Not Found`.
+Credentials come from `HF_TOKEN`, else `~/.cache/huggingface/token` — read explicitly
+because `.env` points `HF_HOME` at the dataset cache, a directory with no token in it, so
+a perfectly good `hf auth login` goes unseen and a private repo then fails with a
+misleading `401 … Repository Not Found`.
 
 ### 6. Train
 
@@ -386,7 +337,7 @@ $V/bin/python scripts/check_dataset.py outputs/rollouts_run1/dataset --min-gripp
 ~2.5 min/episode, so 100 ≈ 4 h. Chain the two with `&&` after a 3-episode verify run so a
 dead-camera bug stops the batch instead of wasting the night. Run under `tmux`.
 
-### 9. Filter, then back to step 4
+### 9. Filter
 
 ```bash
 $V/bin/python scripts/convert_dataset_v30.py outputs/rollouts_run1/dataset
@@ -394,10 +345,81 @@ $V/bin/python scripts/filter_rollouts.py outputs/rollouts_run1 --min-progress 0.
 ```
 
 Keeps successes, plus near-misses above the progress threshold, using lerobot's
-`delete_episodes`. Merge the result with the demonstrations (step 4) and retrain (step 6)
-— that is filtered behaviour cloning, the simplest form of the flywheel. Re-evaluate and
-compare success against the previous number; if it does not move, more machinery
-(a success head, best-of-N, advantages) will not help either.
+`delete_episodes`. 100 rollouts at 32% success kept 43 episodes / 13k frames.
+
+### 10. Merge demos + rollouts, retrain, compare
+
+```bash
+$V/bin/python scripts/merge_datasets.py \
+    --out Datasets/record/ring_insert/merged_v2 \
+    --repo-id witsense-ai/synthetic_so101_ring_insert_v2 \
+    Datasets/record/ring_insert/merged_40 outputs/rollouts_run1/dataset_filtered
+
+$V/bin/python scripts/push_dataset_to_hf.py \
+    witsense-ai/synthetic_so101_ring_insert_v2 \
+    Datasets/record/ring_insert/merged_v2
+```
+
+Then retrain and re-evaluate:
+
+```bash
+DATASET_REPO=witsense-ai/synthetic_so101_ring_insert_v2 bash scripts/train_act.sh smoke
+DATASET_REPO=witsense-ai/synthetic_so101_ring_insert_v2 STEPS=50000 bash scripts/train_act.sh
+
+python -m scripts.run_eval \
+  --checkpoint outputs/train/synthetic_so101_ring_insert_v2_act/checkpoints/last/pretrained_model \
+  --enable_cameras --device cpu --num_episodes 100 --max_steps 400
+```
+
+**The comparison must be like-for-like** — same `--num_episodes`, same `--max_steps`, same
+jitter, and not headless. A 10-episode run cannot distinguish 60% from the 32% baseline
+(p ≈ 0.07); 100 episodes can. Changing the step cap between runs invalidates the number:
+some successes land at 380–400 steps, so a cap raised to 450 converts failures into
+successes on its own.
+
+Push a checkpoint once it beats the previous one:
+
+```bash
+source .env && source "$LEROBOT_VENV/bin/activate"
+python scripts/push_checkpoint_to_hf.py witsense-ai/synthetic_so101_ring_insert_v2_act \
+    outputs/train/synthetic_so101_ring_insert_v2_act/checkpoints/last
+```
+
+Then round 2 is the same loop from step 8, recording with the new policy into
+`outputs/rollouts_run2`.
+
+#### Measured
+
+| round | training data | success (100 ep, 400 steps) | mean max progress |
+|---|---|---|---|
+| 1 | 40 teleop demos | 32 % | 0.43 |
+| 2 | 40 demos + 43 filtered rollouts | **50 %** | 0.52 |
+
+z = 2.59, p = 0.0097 — a real gain, not sampling noise.
+
+Round 2's 50 failures, by how far they got:
+
+| progress | count | reading |
+|---|---|---|
+| < 0.35 | 32 | never engaged the ring — approach/grasp missed |
+| 0.35–0.64 | 13 | grasped, then dropped or misaligned |
+| ≥ 0.64 | 5 | reached the success band, did not seat |
+
+The bottleneck is the **grasp**, not the insertion. `--debug` traces show
+`closest approach to ring` at 0.067–0.083 m in every episode including the successes: the
+approach is off-centre every time, and half the time it is off-centre enough to miss.
+Timeouts are not the constraint — only 2 successes needed more than 350 of the 400 steps.
+
+Expect diminishing returns: after round 2 the dataset is 40 human demos against ~120
+policy episodes, so self-distillation is amplifying the policy's own habits. If a round
+gains much less than the first did, add 10–15 fresh teleop demos of centred grasps rather
+than more rollouts — that attacks the actual bottleneck and is cheaper than another round.
+
+> Rollouts and demonstrations must carry **identical feature metadata** or
+> `merge_datasets` refuses them — `validate_all_metadata` compares the whole dict, so
+> `names=None` vs joint names, or `"channel"` vs `"channels"`, is enough to block a merge
+> of otherwise identical data. `run_eval.py` and `utils/dataset_record.py` are kept in
+> sync; if you edit the feature schema in one, edit both.
 
 ### Teleoperation controls
 

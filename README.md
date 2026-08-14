@@ -142,6 +142,8 @@ Keep a hand on the e-stop for the first rollout. Score by counting successes.
 .env.example                     config: HF, caches, training, W&B, robot ports
 scripts/train_act.sh             train on any Hub dataset            ← main entry point
 scripts/push_checkpoint_to_hf.py push a chosen checkpoint to the org
+scripts/merge_datasets.py        combine dataset batches, or demos + rollouts
+scripts/push_dataset_to_hf.py    push a dataset, with the version tag it needs
 scripts/record.sh                teleoperated data collection
 scripts/calibrate.sh             one-time arm calibration
 scripts/eval_act.sh              on-robot rollouts

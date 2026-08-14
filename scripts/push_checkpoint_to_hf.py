@@ -17,6 +17,24 @@ from pathlib import Path
 from huggingface_hub import HfApi
 
 
+def resolve_token() -> tuple[str | None, str | None]:
+    """Return (token, username), or (None, None) if no usable credentials.
+
+    huggingface_hub falls back to a cached `hf auth login` when the token is None, so
+    this works whether it comes from .env or a previous login. It looks under $HF_HOME,
+    which .env points at the dataset cache — a directory with no token in it — so read
+    the real login explicitly before giving up.
+    """
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HF_HUB_TOKEN")
+    if not token:
+        cached = Path.home() / ".cache" / "huggingface" / "token"
+        token = cached.read_text().strip() if cached.is_file() else None
+    try:
+        return token, HfApi(token=token).whoami()["name"]
+    except Exception:
+        return None, None
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("repo_id", help="Target model repo, e.g. witsense-ai/so101_ring_act")
@@ -25,17 +43,8 @@ def main() -> int:
     p.add_argument("--message", default=None, help="Commit message")
     args = p.parse_args()
 
-    # None makes huggingface_hub fall back to a cached `hf auth login`, so this works
-    # whether the token comes from .env or from a previous login on the machine.
-    # It looks under $HF_HOME, which .env points at the dataset cache — a directory with
-    # no token in it — so read the real login explicitly before giving up.
-    token = os.environ.get("HF_TOKEN") or os.environ.get("HF_HUB_TOKEN")
-    if not token:
-        cached = Path.home() / ".cache" / "huggingface" / "token"
-        token = cached.read_text().strip() if cached.is_file() else None
-    try:
-        who = HfApi(token=token).whoami()["name"]
-    except Exception:
+    token, who = resolve_token()
+    if who is None:
         print(
             "ERROR: no usable Hugging Face credentials.\n"
             "  Set HF_TOKEN in .env, or run: hf auth login",
