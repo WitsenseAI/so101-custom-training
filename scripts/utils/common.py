@@ -1,4 +1,8 @@
 import argparse
+import contextlib
+import errno
+import shutil
+import time
 from typing import TYPE_CHECKING
 import numpy as np
 import torch
@@ -8,6 +12,101 @@ from isaacsim.simulation_app import SimulationApp
 
 if TYPE_CHECKING:
     from isaaclab.envs import DirectRLEnv
+
+@contextlib.contextmanager
+def _rmtree_retrying_on_fuse():
+    """Make shutil.rmtree survive FUSE's asynchronous unlinks.
+
+    Datasets here live on a fuseblk (NTFS/exFAT) mount. rmtree unlinks every file and
+    then immediately rmdir()s the directory, but FUSE completes unlinks lazily — a file
+    still held open becomes a transient .fuse_hidden* entry — so the rmdir can see a
+    directory that is logically empty and raise
+
+        [Errno 39] Directory not empty
+
+    lerobot calls rmtree deep inside save_episode/encode_episode_videos, after the video
+    is encoded but before the metadata is written, so one such failure loses the whole
+    episode. Retrying the rmdir for a couple of seconds is enough; the directory really
+    is empty moments later. Put the dataset on an ext4 path to avoid this entirely.
+    """
+    original = shutil.rmtree
+
+    def rmtree(path, *args, **kwargs):
+        for attempt in range(20):
+            try:
+                return original(path, *args, **kwargs)
+            except OSError as err:
+                if err.errno != errno.ENOTEMPTY:
+                    raise
+                time.sleep(0.1)
+        # Twenty tries is not a race any more. The files are gone either way, so leave
+        # the empty directory rather than lose a recorded episode over it.
+        original(path, ignore_errors=True)
+
+    shutil.rmtree = rmtree
+    try:
+        yield
+    finally:
+        shutil.rmtree = original
+
+
+def save_episode(dataset, *args, **kwargs) -> None:
+    """Save the episode, waiting for the image writer first.
+
+    LeRobotDataset.save_episode() encodes the episode video and then rmtree()s the image
+    directory, without ever draining the async image writer. Two things go wrong:
+
+    1. The rmtree races the writer threads and dies with
+       ``[Errno 39] Directory not empty``. save_episode() has already popped "size" and
+       "task" off the episode buffer by then, so the next access to the buffer raises a
+       confusing ``KeyError: 'size'`` that hides the real failure.
+    2. Worse when it does not crash: frames still queued when ffmpeg runs are missing
+       from the encoded video, silently shortening the episode.
+
+    Draining first fixes both. Call this instead of dataset.save_episode().
+    """
+    writer = getattr(dataset, "image_writer", None)
+    if writer is not None:
+        writer.wait_until_done()
+    with _rmtree_retrying_on_fuse():
+        dataset.save_episode(*args, **kwargs)
+
+
+def finalize(dataset) -> None:
+    """Finalize the dataset if this lerobot has the concept.
+
+    LeRobotDataset.finalize() only exists in lerobot >= 0.4. The 0.3.3 pinned next to
+    Isaac Sim writes meta/episodes.jsonl and meta/episodes_stats.jsonl incrementally in
+    save_episode(), so the dataset is already complete and calling it is a no-op —
+    but the raw AttributeError at the end of a 20-episode session looks exactly like the
+    recording failed, when nothing is wrong.
+    """
+    fn = getattr(dataset, "finalize", None)
+    if fn is None:
+        return
+    with _rmtree_retrying_on_fuse():
+        fn()
+
+
+def clear_episode_buffer(dataset) -> None:
+    """Discard the in-progress episode, waiting for the image writer first.
+
+    lerobot's own LeRobotDataset.clear_episode_buffer() shutil.rmtree()s the episode's
+    image directory without draining the async image writer. With image_writer_threads=8
+    those threads are still flushing frames into that directory, so rmtree enumerates it,
+    a new file lands, and the final rmdir raises
+
+        [Errno 39] Directory not empty: .../images/observation.images.top_rgb/episode_000000
+
+    which kills the recording session. It is timing-dependent: discarding a long episode
+    after a pause often works, discarding right after pressing record does not.
+    """
+    writer = getattr(dataset, "image_writer", None)
+    if writer is not None:
+        writer.wait_until_done()
+    with _rmtree_retrying_on_fuse():
+        dataset.clear_episode_buffer()
+
 
 SINGLE_ARM_HOME_POSITION = np.array(
     [
@@ -115,7 +214,20 @@ def stabilize_garment_after_reset(
     except Exception:
         action_dim = 12 if is_bimanual else 6
 
-    home_joints = DUAL_ARM_HOME_POSITION if is_bimanual else SINGLE_ARM_HOME_POSITION
+    # Prefer the environment's own configured home pose. The constants below are the
+    # bimanual garment task's and put a single arm 60 deg off to one side, so every
+    # recorded episode would start from a posture the task never intended — and one the
+    # env's own reset does not reproduce, leaving eval and training data disagreeing
+    # about where an episode begins.
+    home_joints = None
+    robot = getattr(env, "robot", None)
+    if robot is not None and not is_bimanual:
+        try:
+            home_joints = robot.data.default_joint_pos[0].detach().cpu().numpy().copy()
+        except Exception:
+            home_joints = None
+    if home_joints is None:
+        home_joints = DUAL_ARM_HOME_POSITION if is_bimanual else SINGLE_ARM_HOME_POSITION
 
     if len(home_joints) != action_dim:
         # Use warning from logger if available, otherwise print

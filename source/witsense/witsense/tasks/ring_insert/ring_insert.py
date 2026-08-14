@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from pxr import Sdf, Usd, UsdShade
+from pxr import Gf, Sdf, Usd, UsdShade
 
 import isaacsim.core.utils.stage as stage_utils
 import isaaclab.sim as sim_utils
@@ -24,7 +24,12 @@ from isaaclab.sensors import TiledCamera
 from witsense.assets.scenes.bedroom import MARBLE_BEDROOM_USD_PATH
 from witsense.utils.constant import ASSETS_ROOT
 from witsense.devices.action_process import preprocess_device_action
-from witsense.tasks.ring_insert.ring_insert_cfg import RingInsertEnvCfg
+from witsense.tasks.ring_insert.ring_insert_cfg import (
+    GHOST_HEIGHT,
+    RING_HALF_HEIGHT,
+    RING_INNER_RADIUS,
+    RingInsertEnvCfg,
+)
 from witsense.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -45,6 +50,40 @@ class RingInsertEnv(DirectRLEnv):
         # Centred on x=0.23 (the arm) rather than the bimanual task's x=0 midpoint.
         cfg.viewer = cfg.viewer.replace(eye=(0.23, -1.1, 1.15), lookat=(0.23, -0.02, 0.52))
         super().__init__(cfg, render_mode, **kwargs)
+        self._apply_joint_limits()
+
+    def _apply_joint_limits(self) -> None:
+        """Widen the USD's joint limits to the real arm's measured range.
+
+        Must run after super().__init__(): the articulation does not exist before that,
+        and the reset pose is clamped to whatever limits are in force when it is written.
+        """
+        names = list(self.robot.joint_names)
+
+        spec = self.cfg.joint_limits_deg
+        if spec:
+            missing = [n for n in spec if n not in names]
+            if missing:
+                logger.warning(f"joint_limits_deg names not on this robot, ignored: {missing}")
+            ids = [names.index(n) for n in spec if n in names]
+            deg = torch.tensor([spec[names[i]] for i in ids], dtype=torch.float32, device=self.device)
+            limits = torch.deg2rad(deg).unsqueeze(0).expand(self.num_envs, -1, -1)
+            self.robot.write_joint_position_limit_to_sim(limits, joint_ids=ids)
+
+        # Written only now, once the limits are wide enough to hold it. init_state's
+        # joint_pos had to stay inside the USD's range to survive startup validation, so
+        # without this elbow_flex would sit at the USD's 90 rather than the real 93.6.
+        home = self.cfg.home_pose_deg
+        if home:
+            for name, value in home.items():
+                if name in names:
+                    self.robot.data.default_joint_pos[:, names.index(name)] = np.deg2rad(value)
+
+        actual = torch.rad2deg(self.robot.data.default_joint_pos[0]).tolist()
+        logger.info(
+            f"[RingInsertEnv] home pose (deg) {[round(v, 1) for v in actual]} "
+            f"for joints {names}"
+        )
 
     def _setup_scene(self):
         # `self.robot` is the attribute name devices/action_process.py reads for
@@ -63,9 +102,10 @@ class RingInsertEnv(DirectRLEnv):
             orientation=(0.0, 0.0, 0.0, 0.0),
         )
 
-        # Retexture here, while the scene prims have just been authored — not only on
-        # reset, so the dark table is in place before the first frame is rendered.
+        # Recolour here, while the scene prims have just been authored — not only on
+        # reset, so the right colours are in place before the first frame is rendered.
         self._apply_table_texture()
+        self._apply_robot_color()
 
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["ring"] = self.ring
@@ -87,19 +127,28 @@ class RingInsertEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
         joint_pos = self.robot.data.joint_pos[:, :6].squeeze(0)
 
+        # EVERY array here must be copied. On a CPU device tensor.cpu() is a no-op and
+        # .numpy() returns a VIEW onto the live simulation buffer, which Isaac Lab
+        # overwrites in place each step. The recorder keeps these arrays until the episode
+        # is saved, so without a copy all N frames alias one buffer and the whole episode
+        # is written holding the final step's values — a dataset whose observation.state
+        # never moves while the action spans 90 degrees, with no error anywhere.
+        # (On CUDA .cpu() copies, which is why this hides when the sim runs on GPU.)
         observations = {
-            "action": self.actions.squeeze(0).cpu().detach().numpy(),
-            "observation.state": joint_pos.cpu().detach().numpy(),
+            "action": self.actions.squeeze(0).cpu().detach().numpy().copy(),
+            "observation.state": joint_pos.cpu().detach().numpy().copy(),
             "observation.images.top_rgb": self.top_camera.data.output["rgb"]
             .cpu()
             .detach()
             .numpy()
-            .squeeze(),
+            .squeeze()
+            .copy(),
             "observation.images.wrist_rgb": self.wrist_camera.data.output["rgb"]
             .cpu()
             .detach()
             .numpy()
-            .squeeze(),
+            .squeeze()
+            .copy(),
         }
 
         # Depth is optional: absent when the top camera renders RGB only
@@ -137,6 +186,40 @@ class RingInsertEnv(DirectRLEnv):
         xy_dist, ring_z = self._ring_ghost_offset()
         return (xy_dist < self.cfg.success_xy_tol) & (ring_z < self.cfg.success_z_max)
 
+    def insertion_progress(self) -> torch.Tensor:
+        """How far along the insertion is, in [0, 1]. Continuous where success is binary.
+
+        A near miss and a rollout that ignored the ring both score 0 on success, which
+        makes them indistinguishable when ranking policies or filtering rollouts to
+        retrain on. Two halves, so the whole task is graded rather than just its end:
+
+            approach (0.5) - how far the ring has closed on the ghost horizontally, over
+                             the ~0.15 m they start apart
+            seating  (0.5) - align x depth, where align is 1 on the ghost's axis and 0
+                             once its hole could not contain it, and depth runs from 0
+                             with the ring perched on the ghost's head to 1 with it down
+                             at its resting height
+
+        Seating alone (the obvious formulation) stays at 0 until the last ~2 cm of
+        descent, so a rollout that lifted the ring and carried it to the target scores
+        the same as one that never touched it — precisely the distinction this is for.
+
+        Caveat: approach counts lateral closeness however it was achieved, so a ring
+        knocked toward the ghost scores ~0.5 without ever being grasped. Use it to rank
+        attempts, not as ground truth for success — _get_success remains that.
+        """
+        xy_dist, ring_z = self._ring_ghost_offset()
+        ghost_z = self.ghost.data.root_pos_w[:, 2]
+
+        approach = (1.0 - xy_dist / self.cfg.progress_approach_range).clamp(0.0, 1.0)
+
+        align = (1.0 - xy_dist / RING_INNER_RADIUS).clamp(0.0, 1.0)
+        top = ghost_z + GHOST_HEIGHT              # the ghost's head
+        seated = ghost_z + RING_HALF_HEIGHT       # ring centre once it is down on the table
+        depth = ((top - ring_z) / (top - seated).clamp(min=1e-6)).clamp(0.0, 1.0)
+
+        return 0.5 * approach + 0.5 * align * depth
+
     # ── reset ────────────────────────────────────────────────────────────────────
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -145,7 +228,15 @@ class RingInsertEnv(DirectRLEnv):
 
         super()._reset_idx(env_ids)
 
-        joint_pos = self.robot.data.default_joint_pos[env_ids]
+        joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
+        jitter = self.cfg.arm_start_jitter_deg
+        if jitter:
+            noise = self.rng.uniform(-jitter, jitter, size=tuple(joint_pos.shape))
+            joint_pos += torch.as_tensor(np.deg2rad(noise), dtype=joint_pos.dtype, device=self.device)
+            # Stay inside the limits, or PhysX clamps silently and the pose drifts from
+            # what the trace reports.
+            limits = self.robot.data.joint_pos_limits[env_ids]
+            joint_pos = joint_pos.clamp(limits[..., 0], limits[..., 1])
         self.robot.write_joint_position_to_sim(joint_pos, joint_ids=None, env_ids=env_ids)
         # Zero the velocities too: writing only positions lets the previous episode's
         # joint velocities survive and bias the first observation of the next one.
@@ -154,18 +245,23 @@ class RingInsertEnv(DirectRLEnv):
         )
 
         self._write_object_pose(self.ring, self.cfg.ring_pos, env_ids, jitter=self.cfg.ring_xy_jitter)
-        self._write_object_pose(self.ghost, self.cfg.ghost_pos, env_ids, jitter=0.0)
+        # The ghost has no velocity to clear when it is kinematic — PhysX rejects
+        # setLinearVelocity/setAngularVelocity on kinematic bodies and logs an error.
+        self._write_object_pose(
+            self.ghost, self.cfg.ghost_pos, env_ids, jitter=0.0,
+            zero_velocity=not self.cfg.ghost_kinematic,
+        )
         self._apply_table_texture()
 
     def _apply_table_texture(self) -> None:
-        """Retexture the table top so the white ring and white ghost stand out on it."""
-        tex_id = self.cfg.table_texture_id
-        if tex_id is None:
+        """Retexture the table top to match the real mat the policy was trained on."""
+        tex_name = self.cfg.table_texture
+        if not tex_name:
             return
 
         # Absolute, so this does not depend on the working directory the way the
         # bimanual task's randomiser does.
-        tex_path = Path(ASSETS_ROOT) / "textures" / "surface" / f"{tex_id}.png"
+        tex_path = Path(ASSETS_ROOT) / "textures" / "surface" / tex_name
         if not tex_path.is_file():
             logger.warning(f"table texture not found: {tex_path}")
             return
@@ -188,12 +284,46 @@ class RingInsertEnv(DirectRLEnv):
         with Usd.EditContext(stage, stage.GetRootLayer()):
             tex_input.Set(Sdf.AssetPath(str(tex_path)))
 
+    def _apply_robot_color(self) -> None:
+        """Paint the arm's materials, since the asset is yellow and the real arm is white.
+
+        Walks the materials under the robot prim rather than naming them: the asset has
+        several and their paths are not worth hardcoding. Both shader conventions are
+        handled — UsdPreviewSurface uses `diffuseColor`, MDL/OmniPBR uses
+        `diffuse_color_constant`. Shaders driven by a texture are skipped, so the black
+        motor bodies keep their own look.
+        """
+        color = self.cfg.robot_color
+        if color is None:
+            return
+
+        stage = stage_utils.get_current_stage()
+        root = stage.GetPrimAtPath(self.cfg.robot.prim_path)
+        if not root.IsValid():
+            logger.warning(f"robot prim not found: {self.cfg.robot.prim_path}")
+            return
+
+        painted = 0
+        with Usd.EditContext(stage, stage.GetRootLayer()):
+            for prim in Usd.PrimRange(root):
+                if not prim.IsA(UsdShade.Shader):
+                    continue
+                shader = UsdShade.Shader(prim)
+                for name in ("diffuseColor", "diffuse_color_constant", "base_color_constant"):
+                    inp = shader.GetInput(name)
+                    # A connected input is driven by a texture; overwriting it does nothing.
+                    if inp and not inp.GetConnectedSource():
+                        inp.Set(Gf.Vec3f(*color))
+                        painted += 1
+        logger.info(f"[RingInsertEnv] painted {painted} robot shader inputs {color}")
+
     def _write_object_pose(
         self,
         obj: RigidObject,
         pos: tuple[float, float, float],
         env_ids: Sequence[int],
         jitter: float,
+        zero_velocity: bool = True,
     ) -> None:
         n = len(env_ids)
         xyz = np.tile(np.asarray(pos, dtype=np.float32), (n, 1))
@@ -201,10 +331,15 @@ class RingInsertEnv(DirectRLEnv):
             xyz[:, :2] += self.rng.uniform(-jitter, jitter, size=(n, 2))
 
         root_state = obj.data.default_root_state[env_ids].clone()
-        root_state[:, :3] = torch.as_tensor(xyz, device=self.device) + self.scene.env_origins[env_ids]
+        # World coordinates, not env-relative: the objects live at absolute prim paths
+        # (/World/Object/...) and this task never clones environments, so
+        # scene.env_origins is None rather than a (num_envs, 3) offset table.
+        root_state[:, :3] = torch.as_tensor(xyz, device=self.device)
         root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
-        root_state[:, 7:] = 0.0  # drop any linear/angular velocity from the last episode
-        obj.write_root_state_to_sim(root_state, env_ids=env_ids)
+        obj.write_root_pose_to_sim(root_state[:, :7], env_ids=env_ids)
+        if zero_velocity:
+            # Drop any linear/angular velocity carried over from the last episode.
+            obj.write_root_velocity_to_sim(torch.zeros_like(root_state[:, 7:]), env_ids=env_ids)
 
     # ── harness hooks (scripts/utils/dataset_record.py, dataset_replay.py) ────────
 

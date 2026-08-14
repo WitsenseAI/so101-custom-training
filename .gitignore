@@ -39,4 +39,6 @@ VM_QUICKSTART.md
 **/*.usda
 **/*.usdc
 **/*.usdz
+Datasets/*
+outputs/*
 

@@ -27,7 +27,12 @@ def main() -> int:
 
     # None makes huggingface_hub fall back to a cached `hf auth login`, so this works
     # whether the token comes from .env or from a previous login on the machine.
-    token = os.environ.get("HF_TOKEN") or os.environ.get("HF_HUB_TOKEN") or None
+    # It looks under $HF_HOME, which .env points at the dataset cache — a directory with
+    # no token in it — so read the real login explicitly before giving up.
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HF_HUB_TOKEN")
+    if not token:
+        cached = Path.home() / ".cache" / "huggingface" / "token"
+        token = cached.read_text().strip() if cached.is_file() else None
     try:
         who = HfApi(token=token).whoami()["name"]
     except Exception:

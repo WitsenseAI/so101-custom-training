@@ -145,7 +145,7 @@ Measured from the assets, not guessed:
 | | |
 |---|---|
 | Table038 top | **z = 0.521** (x −0.522…0.468, y −0.400…0.400) |
-| ring | 100 mm outside, 80 mm hole, 24 mm tall, origin at **centre** → rests at 0.533 |
+| ring | 100 mm outside, 90 mm hole (5 mm wall), 24 mm tall, origin at **centre** → rests at 0.533 |
 | ghost | 62 × 70 mm, 48 mm tall, origin at its **base** → rests at 0.521 |
 | robot | lowest geometry is 30 mm above its origin → origin goes at 0.491 |
 
@@ -158,10 +158,13 @@ Measured from the assets, not guessed:
 | `success_xy_tol` | `0.015` | slack around the 5 mm the geometry actually allows |
 | `success_z_max` | `0.551` | ring centre is 0.533 down on the table, 0.581 perched on the ghost |
 
-> **The insertion clearance is 5 mm per side.** The ring's hole is 80 mm and the ghost is
-> 70 mm across. That is a demanding teleoperated insertion — if it proves too fiddly to
-> demonstrate consistently, scale the ghost down or swap in a wider ring before recording
-> fifty episodes of near-misses.
+The insertion clearance is 10 mm per side: a 90 mm hole over a 70 mm ghost. Tight but
+demonstrable. `roundtape.usda` is a generated ring — 64 angular segments, 4 points each,
+ordered outer+z / outer−z / inner−z / inner+z. To resize it, regenerate `points`,
+`extent`, `physics:mass` and `physics:diagonalInertia` together; mass follows the wall
+volume at 948.5 kg/m³ and the inertia is a hollow cylinder,
+`Ixx=Iyy=(1/12)m(3(ro²+ri²)+h²)`, `Izz=½m(ro²+ri²)`. Leaving the inertia stale makes the
+ring tumble wrongly without any error.
 
 The arm base is at `(0.23, -0.25)` rotated 180° about z, so it reaches out along **+y**
 over both objects. The top camera keeps the bimanual task's rotation and moves only its
@@ -219,6 +222,12 @@ while a key was held), the stuck delta clears on the next `teleop_interface.rese
 > declared features. The upstream harness passed it inside the frame, which fails with
 > `add_frame() missing 1 required positional argument: 'task'` the moment you press `S`.
 > Patched in `dataset_record.py`, `dataset_replay.py` and `evaluation.py`.
+
+`decimation = 3` over the 1/90 s physics step puts the env at **30 Hz**, so one env step is
+one dataset frame at the declared `fps=30`. The garment task uses `decimation = 1`, i.e.
+90 Hz, and relies on episodes being "treated as 30 Hz for dataset purposes regardless of
+physics_hz" (see `apply_camera_overrides`). That fudge makes a recording play back at a
+third speed and makes a 30 Hz action chunk execute three times too fast at eval.
 
 Recording writes the single-arm schema: `observation.state` and `action` are 6-dim with
 the SO-101 joint names, images are `observation.images.top_rgb` and

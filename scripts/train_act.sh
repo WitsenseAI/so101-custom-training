@@ -20,6 +20,16 @@ else
     exit 1
 fi
 
+# Fall back to a cached `hf auth login`. huggingface_hub looks for its token under
+# $HF_HOME, and .env points HF_HOME at the dataset cache, which has no token in it — so a
+# perfectly good login under ~/.cache/huggingface goes unseen and any PRIVATE dataset
+# fails with a misleading "401 ... Repository Not Found". Public datasets need no token,
+# which is why this only bites the first time you train from a private one.
+if [ -z "${HF_TOKEN:-}" ] && [ -f "$HOME/.cache/huggingface/token" ]; then
+    HF_TOKEN=$(cat "$HOME/.cache/huggingface/token")
+    export HF_TOKEN
+fi
+
 : "${DATASET_REPO:?set DATASET_REPO in .env}"
 : "${HF_ORG:=witsense-ai}"
 : "${LEROBOT_VENV:=$HOME/.venvs/lerobot}"

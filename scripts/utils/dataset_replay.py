@@ -16,7 +16,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from witsense.utils.record import get_next_experiment_path_with_gap, RateLimiter
 from witsense.utils.logger import get_logger
 
-from .common import stabilize_garment_after_reset
+from .common import finalize, save_episode, clear_episode_buffer, stabilize_garment_after_reset
 
 logger = get_logger(__name__)
 
@@ -637,7 +637,7 @@ def replay(args: argparse.Namespace) -> None:
 
                 # Clear buffer if saving
                 if replay_dataset is not None:
-                    replay_dataset.clear_episode_buffer()
+                    clear_episode_buffer(replay_dataset)
 
                 # Replay the episode
                 success = replay_episode(
@@ -672,7 +672,7 @@ def replay(args: argparse.Namespace) -> None:
 
                 if should_save:
                     try:
-                        replay_dataset.save_episode()
+                        save_episode(replay_dataset)
                         append_episode_initial_pose(
                             json_path, saved_episodes, initial_pose
                         )
@@ -681,14 +681,14 @@ def replay(args: argparse.Namespace) -> None:
                     except Exception as e:
                         logger.error(f"Failed to save episode: {e}", exc_info=True)
                 elif replay_dataset is not None:
-                    replay_dataset.clear_episode_buffer()
+                    clear_episode_buffer(replay_dataset)
 
     finally:
         # Ensure dataset is finalized even if an error occurs
         if replay_dataset is not None:
             try:
-                replay_dataset.clear_episode_buffer()
-                replay_dataset.finalize()
+                clear_episode_buffer(replay_dataset)
+                finalize(replay_dataset)
             except Exception as e:
                 logger.error(f"Error finalizing dataset: {e}", exc_info=True)
 

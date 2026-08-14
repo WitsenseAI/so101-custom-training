@@ -24,7 +24,7 @@ from witsense.utils.record import (
     append_episode_initial_pose,
 )
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from .common import stabilize_garment_after_reset
+from .common import save_episode, clear_episode_buffer, stabilize_garment_after_reset
 from witsense.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -256,7 +256,7 @@ def run_evaluation_loop(
         # Save Datasets
         if args.save_datasets:
             if success_flag:
-                eval_dataset.save_episode()
+                save_episode(eval_dataset)
                 append_episode_initial_pose(
                     json_path,
                     episode_index,
@@ -265,7 +265,7 @@ def run_evaluation_loop(
                 )
                 episode_index += 1
             else:
-                eval_dataset.clear_episode_buffer()
+                clear_episode_buffer(eval_dataset)
 
         # Save Videos (Using generic util)
         if args.save_video:

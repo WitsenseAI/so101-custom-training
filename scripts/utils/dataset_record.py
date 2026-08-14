@@ -15,6 +15,7 @@ from isaaclab_tasks.utils import parse_env_cfg
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from witsense.devices import (
+    Se3Gamepad,
     Se3Keyboard,
     SO101Leader,
     BiSO101Leader,
@@ -27,7 +28,7 @@ from witsense.utils.record import (
 )
 from witsense.utils.logger import get_logger
 
-from .common import stabilize_garment_after_reset
+from .common import finalize, save_episode, clear_episode_buffer, stabilize_garment_after_reset
 
 logger = get_logger(__name__)
 
@@ -50,14 +51,16 @@ def validate_task_and_device(args: argparse.Namespace) -> None:
             or args.teleop_device == "bi-keyboard"
         ), "Only support bi-so101leader or bi-keyboard for bi-arm task"
     else:
-        assert (
-            args.teleop_device == "so101leader" or args.teleop_device == "keyboard"
-        ), "Only support so101leader or keyboard for single-arm task"
+        assert args.teleop_device in (
+            "so101leader",
+            "keyboard",
+            "gamepad",
+        ), "Only support so101leader, keyboard or gamepad for single-arm task"
 
 
 def create_teleop_interface(
     env: DirectRLEnv, args: argparse.Namespace
-) -> Union[Se3Keyboard, SO101Leader, BiSO101Leader, BiKeyboard]:
+) -> Union[Se3Keyboard, Se3Gamepad, SO101Leader, BiSO101Leader, BiKeyboard]:
     """Create teleoperation interface based on device type.
 
     Args:
@@ -72,6 +75,11 @@ def create_teleop_interface(
     """
     if args.teleop_device == "keyboard":
         return Se3Keyboard(env, sensitivity=0.25 * args.sensitivity)
+    if args.teleop_device == "gamepad":
+        # Lower base sensitivity than the keyboard's 0.25: a stick is analogue, so it
+        # spends most of its travel part-deflected and a keyboard-sized step makes the
+        # arm unusable at full push.
+        return Se3Gamepad(env, sensitivity=0.15 * args.sensitivity)
     if args.teleop_device == "so101leader":
         return SO101Leader(env, port=args.port, recalibrate=args.recalibrate)
     if args.teleop_device == "bi-so101leader":
@@ -85,7 +93,7 @@ def create_teleop_interface(
         return BiKeyboard(env, sensitivity=0.25 * args.sensitivity)
     raise ValueError(
         f"Invalid device interface '{args.teleop_device}'. "
-        f"Supported: 'keyboard', 'so101leader', 'bi-so101leader', 'bi-keyboard'."
+        f"Supported: 'keyboard', 'gamepad', 'so101leader', 'bi-so101leader', 'bi-keyboard'."
     )
 
 
@@ -149,11 +157,13 @@ def register_teleop_callbacks(
 
 def create_dataset_if_needed(
     args: argparse.Namespace,
+    env: Optional[Any] = None,
 ) -> Tuple[Optional[LeRobotDataset], Optional[Path], Optional[Any], bool]:
     """Create LeRobotDataset if recording is enabled.
 
     Args:
         args: Command-line arguments containing recording configuration.
+        env: Optional environment, used to read the real camera resolutions.
 
     Returns:
         Tuple of (dataset, json_path, solver, is_bi_arm):
@@ -222,10 +232,23 @@ def create_dataset_if_needed(
     else:
         image_keys = ["top_rgb", "wrist_rgb"]
 
+    # Shapes come from the env's own cameras when one is available. Hardcoding
+    # (480, 640, 3) silently mismatches any task whose cameras differ — ring_insert
+    # renders its wrist at 1280x720 to match the real dataset the ACT policy trained on.
+    cam_attrs = {
+        "top_rgb": "top_camera",
+        "wrist_rgb": "wrist_camera",
+        "left_rgb": "left_wrist",
+        "right_rgb": "right_wrist",
+    }
     for key in image_keys:
+        shape = (480, 640, 3)
+        cam = getattr(getattr(env, "cfg", None), cam_attrs.get(key, ""), None) if env else None
+        if cam is not None:
+            shape = (cam.height, cam.width, 3)
         features[f"observation.images.{key}"] = {
             "dtype": "video",
-            "shape": (480, 640, 3),
+            "shape": shape,
             "names": ["height", "width", "channels"],
         }
 
@@ -408,8 +431,8 @@ def run_recording_phase(
     while episode_index < args.num_episode:
         # Check if recording should be aborted
         if flags["abort"]:
-            dataset.clear_episode_buffer()
-            dataset.finalize()
+            clear_episode_buffer(dataset)
+            finalize(dataset)
             logger.warning(f"Recording aborted, completed {episode_index} episodes")
             return object_initial_pose
 
@@ -420,8 +443,8 @@ def run_recording_phase(
         while not flags["success"]:
             # Check if recording should be aborted
             if flags["abort"]:
-                dataset.clear_episode_buffer()
-                dataset.finalize()
+                clear_episode_buffer(dataset)
+                finalize(dataset)
                 logger.warning(f"Recording aborted, completed {episode_index} episodes")
                 return object_initial_pose
 
@@ -502,7 +525,7 @@ def run_recording_phase(
             dataset.add_frame(frame, frame.pop("task"))
 
             if truncated or flags["remove"]:
-                dataset.clear_episode_buffer()
+                clear_episode_buffer(dataset)
                 logger.info(f"Re-recording episode {episode_index}")
                 try:
                     env.reset()
@@ -523,7 +546,7 @@ def run_recording_phase(
         save_start_time = time.time()
         logger.info(f"[Recording] Saving episode {episode_index}...")
         try:
-            dataset.save_episode()
+            save_episode(dataset)
             save_duration = time.time() - save_start_time
             logger.info(
                 f"[Recording] Episode {episode_index} saved (took {save_duration:.1f}s)"
@@ -575,8 +598,8 @@ def run_recording_phase(
             logger.error(f"[Recording] Failed to get initial pose: {e}")
             traceback.print_exc()
             object_initial_pose = None
-    dataset.clear_episode_buffer()
-    dataset.finalize()
+    clear_episode_buffer(dataset)
+    finalize(dataset)
     logger.info(f"All {args.num_episode} episodes recording completed!")
     return object_initial_pose
 
@@ -641,6 +664,12 @@ def record_dataset(args: argparse.Namespace, simulation_app: SimulationApp) -> N
     env_cfg.garment_cfg_base_path = args.garment_cfg_base_path
     env_cfg.particle_cfg_path = args.particle_cfg_path
 
+    # Stop the camera producing depth at all, rather than rendering it every step and
+    # discarding it when the frame is assembled.
+    if getattr(args, "disable_depth", False) and hasattr(env_cfg, "top_camera"):
+        env_cfg.top_camera.data_types = ["rgb"]
+        logger.info("Depth disabled: top camera renders RGB only")
+
     if args.use_random_seed:
         env_cfg.use_random_seed = True
         logger.info("Using random seed (no fixed seed)")
@@ -655,7 +684,7 @@ def record_dataset(args: argparse.Namespace, simulation_app: SimulationApp) -> N
         teleop_interface, recording_enabled=args.enable_record
     )
     teleop_interface.reset()
-    dataset, json_path, ee_solver, is_bi_arm = create_dataset_if_needed(args)
+    dataset, json_path, ee_solver, is_bi_arm = create_dataset_if_needed(args, env)
     count_render = 0
     printed_instructions = False
     idle_frame_counter = 0
@@ -703,9 +732,9 @@ def record_dataset(args: argparse.Namespace, simulation_app: SimulationApp) -> N
         # If Ctrl+C is pressed during recording, clear the current buffer
         if args.enable_record and dataset is not None and flags["start"]:
             logger.info("Clearing current episode buffer...")
-            dataset.clear_episode_buffer()
+            clear_episode_buffer(dataset)
             logger.info("Buffer cleared, dataset remains intact")
-            dataset.finalize()
+            finalize(dataset)
             logger.info("Dataset saved")
 
     except Exception as e:
