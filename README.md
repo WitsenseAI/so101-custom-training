@@ -22,9 +22,10 @@ export DATASET_REPO=witsense-ai/so101_pick_and_place_ring_33   # any Hub dataset
 ```
 
 Everything else has a working default. `POLICY_REPO` is derived as
-`$HF_ORG/<dataset-name>_act` unless you set it. Caches (`HF_LEROBOT_HOME`, `HF_HOME`) and
-the lerobot venv (`LEROBOT_VENV`) default under `$HOME` — point them at a roomy disk if
-your datasets are large. Weights & Biases is off by default; set `WANDB_ENABLE=true`.
+`$HF_ORG/<dataset-name>_act` unless you set it. Weights & Biases is off by default; set
+`WANDB_ENABLE=true`.
+
+
 
 Requires [`uv`](https://docs.astral.sh/uv/) and `ffmpeg`. Everything else installs itself.
 
