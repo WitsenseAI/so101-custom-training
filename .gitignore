@@ -24,6 +24,13 @@ VM_QUICKSTART.md
 # FUSE keeps deleted-but-open files around (e.g. a script a running job holds open)
 .fuse_hidden*
 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
 # C++
 **/cmake-build*/
 **/build*/
