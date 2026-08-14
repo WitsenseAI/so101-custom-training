@@ -1,4 +1,4 @@
-space-sue/so101_rotate-retainer-pin/data/chunk-000/file-000.parquet
+
 outputs/*
 witsensai/*
 space-sue/*
@@ -16,6 +16,29 @@ COMPLETE_TRAINING_WORKFLOW.md
 DATASET_PREPARATION.md
 LOCAL_TRAINING_GUIDE.md
 VM_QUICKSTART.md
-scripts/outputs/captured_images/opencv__dev_video0.png
-scripts/outputs/captured_images/opencv__dev_video2.png
-scripts/outputs/captured_images/opencv__dev_video4.png
+
+
+# Keep the template, never the real thing
+!.env.example
+
+# FUSE keeps deleted-but-open files around (e.g. a script a running job holds open)
+.fuse_hidden*
+
+# C++
+**/cmake-build*/
+**/build*/
+**/*.so
+**/*.log*
+
+# Omniverse
+**/*.dmp
+**/.thumbs
+
+# No USD files allowed in the repo
+**/*.usd
+**/*.usda
+**/*.usdc
+**/*.usdz
+Datasets/*
+outputs/*
+
