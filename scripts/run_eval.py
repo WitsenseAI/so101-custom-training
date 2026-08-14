@@ -321,11 +321,17 @@ def main() -> None:
         # Image shapes come from the cameras rather than being repeated as literals —
         # they differ per camera (top 480x640, wrist 720x1280) and a mismatch here is
         # only caught deep inside lerobot's frame validation.
+        # These must match scripts/utils/dataset_record.py EXACTLY, or lerobot's
+        # merge_datasets refuses to combine rollouts with demonstrations:
+        # validate_all_metadata compares the whole feature dict, names included.
+        joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex",
+                       "wrist_flex", "wrist_roll", "gripper"]
+
         def _video_feature(cam):
             return {
                 "dtype": "video",
                 "shape": (cam.height, cam.width, 3),
-                "names": ["height", "width", "channel"],
+                "names": ["height", "width", "channels"],
             }
 
         dataset = LeRobotDataset.create(
@@ -333,8 +339,8 @@ def main() -> None:
             fps=30,
             root=str(out_dir / "dataset"),
             features={
-                "observation.state": {"dtype": "float32", "shape": (6,), "names": None},
-                "action": {"dtype": "float32", "shape": (6,), "names": None},
+                "observation.state": {"dtype": "float32", "shape": (6,), "names": joint_names},
+                "action": {"dtype": "float32", "shape": (6,), "names": joint_names},
                 "observation.images.top_rgb": _video_feature(env_cfg.top_camera),
                 "observation.images.wrist_rgb": _video_feature(env_cfg.wrist_camera),
             },
