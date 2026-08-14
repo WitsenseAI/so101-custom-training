@@ -41,14 +41,15 @@ If you re-copy from upstream, these are the four things that break:
 
 One more, specific to this repo: `witsense/tasks/ring_insert/` is a copy of
 `tasks/bedroom/` and registered the **same gym ids**. `witsense.tasks` imports both, so
-the later one silently replaced the bedroom env. Ring-insert ids are now
-`LeHome-BiSO101-Direct-RingInsert-*`.
+the later one silently replaced the bedroom env. The ring-insert id is now
+`LeHome-SO101-Direct-RingInsert-v0` — deliberately without `Bi`, see below.
 
 ## Install
 
 ```bash
 conda activate env_isaaclab
 pip install -e source/witsense
+hf download witsense-ai/witsense_sim_assets --repo-type dataset --local-dir Assets
 ```
 
 `setup.py` pulls in the runtime deps that Isaac Lab does not provide: `pyserial`,
@@ -64,17 +65,48 @@ Expect `/media/zarus101/ssd2/WITSENSE/so101-custom-training/Assets`. A `pxr` /
 `ModuleNotFoundError` here is normal for anything under `witsense.tasks` — those modules
 only import once Isaac Sim is running.
 
-## Assets
+## Assets — download these first
+
+Nothing runs without them: the scene, the arm, the ring and the ghost are all USD files,
+and they are kept out of git (the root `.gitignore` excludes `**/*.usd*`; `Assets/.gitignore`
+is `*`). They live in a private dataset repo in the org.
+
+```bash
+cd so101-custom-training
+hf download witsense-ai/witsense_sim_assets --repo-type dataset --local-dir Assets
+```
+
+989 MB, 450 files. Needs read access to `witsense-ai` — `hf auth login` first if the
+download 401s. Verify:
+
+```bash
+ls Assets/scenes/marble/Scene_00_Apartment.usd Assets/objects/ring/roundtape.usda
+python -c "import witsense.utils.constant as c; print(c.ASSETS_ROOT)"
+```
 
 `utils/constant.py` sets `ASSETS_ROOT = <git root>/Assets`, so **run everything from the
 repo root** — `garment_cfg_base_path` and `particle_cfg_path` in `GarmentEnvCfg` are
 relative to the working directory too.
 
 ```
-Assets/scenes/marble/Scene_00_Apartment.usd        the bedroom
-Assets/objects/Challenge_Garment/Release/          Top_Long_*, Top_Short_*, Pant_*
-Assets/robots/lerobot/so101_follower.usd
+Assets/scenes/marble/Scene_00_Apartment.usd        the bedroom scene, both tasks
+Assets/scenes/marble/Table038/                     the table; retextured at runtime
+Assets/robots/lerobot/so101_follower_good.usd      the arm
+Assets/objects/ring/roundtape.usda                 ring_insert — generated, not upstream
+Assets/objects/ghost/ghost.usd                     ring_insert target
+Assets/objects/Challenge_Garment/Release/          bedroom garment task only (266 MB)
+Assets/textures/surface/real_mat.png               orange mat matching the real setup
 ```
+
+If you re-upload that repo, two traps cost an hour here:
+
+- **Do not upload `Assets/.gitignore`.** It is `*` plus `!.gitignore`, and the Hub applies
+  a repo's `.gitignore` **server-side** — commits then succeed while adding no files, with
+  no error. The symptom is `list_repo_commits` showing your commit and `list_repo_files`
+  showing nothing.
+- **Upload from outside the git tree.** `huggingface_hub` honours the enclosing repo's
+  `.gitignore` too, and the root one excludes every `*.usd`. Stage with
+  `cp -al Assets /somewhere/outside` (hardlinks, so no 946 MB copy) and upload that.
 
 ## Run the bedroom scene
 
@@ -170,7 +202,7 @@ The arm base is at `(0.23, -0.25)` rotated 180° about z, so it reaches out alon
 over both objects. The top camera keeps the bimanual task's rotation and moves only its
 position, by the offset that recentres the same camera→workspace vector on the new
 single-arm workspace — so the viewing angle is the one that setup was authored with.
-| `table_texture_id` | `76` | dark table top; `None` keeps the scene's white material |
+| `table_texture` | `real_mat.png` | orange mat matching the real setup; `None` keeps the scene's white table |
 
 The bedroom table ships white, which leaves a white ghost and a pale ring invisible on it.
 `table_texture_id` indexes `Assets/textures/surface/<id>.png`, applied to the same shader
@@ -179,28 +211,217 @@ grey, mean rgb 63/62/59 against the white table's ~255. 10 and 51 are warm wood 
 Fixed, not randomised. If the ring still reads too pale, its own colour is one line:
 `inputs:diffuseColor = (0.88, 0.74, 0.44)` in `Assets/objects/ring/roundtape.usda`.
 
-### Teleoperate and record
+## Pipeline: demonstrations → policy → rollouts
 
-Install lerobot first — see "Installing lerobot next to Isaac Sim" above; the version and
-order matter.
+The whole loop, in order. Every step has a check, because several of these failed
+silently and cost hours — the notes under each are the failures that actually happened,
+not hypotheticals.
+
+```
+1 record teleop demos      dataset_sim record            -> Datasets/record/ring_insert/00N
+2 check the recording      check_dataset.py              <- MUST print "looks good"
+3 convert to v3.0          convert_dataset_v30.py        (in place; original -> 00N_old)
+4 merge batches            merge_datasets (lerobot)      -> merged_NN
+5 push                     HfApi.upload_folder           -> witsense-ai/<name>
+6 train                    train_act.sh                  -> outputs/train/<run>
+7 evaluate                 run_eval.py                   -> success rate + progress
+8 collect rollouts         run_eval.py --record          -> outputs/rollouts_runN
+9 filter                   filter_rollouts.py            -> keep successes / near-misses
+10 merge + retrain         back to step 4                (filtered behaviour cloning)
+```
+
+`$V` below is the ACT venv, `/media/zarus101/ssd2/WITSENSE/lerobot-venv`. Steps 1, 7 and 8
+run in `env_isaaclab`; steps 2–5 and 9 run in `$V`, because the two envs hold different
+lerobot versions (see "Installing lerobot next to Isaac Sim").
+
+### 1. Record teleoperated demonstrations
 
 ```bash
 python -m scripts.dataset_sim record \
     --task LeHome-SO101-Direct-RingInsert-v0 \
-    --teleop_device keyboard \
-    --enable_record \
+    --teleop_device gamepad --sensitivity 0.5 \
+    --enable_record --disable_depth --num_episode 20 \
     --dataset_root Datasets/record/ring_insert \
     --task_description "place the ring around the ghost toy" \
     --enable_cameras --device cpu
 ```
 
+- **`--num_episode`, singular.** `--num_episodes` (plural) exists on other subcommands and
+  is silently ignored here, so you get the default 20 no matter what you pass.
+- **`--disable_depth`.** Depth is stored as a raw 480×640 array, so lerobot computes
+  per-element statistics for it and 20 episodes produce ~187 MB of episode metadata —
+  past the 100 MB limit the v2.1→v3.0 converter refuses. ACT never reads depth.
+- **Do not run headless.** The cameras only re-render inside `step()` when
+  `has_gui()` or `has_rtx_sensors()` is true; headless they stay frozen at the reset
+  frame and the recording gets correct joint data alongside dead video.
+- Aim for 40–50 episodes total; the real dataset for this task has 33. Record in batches
+  and merge (step 4) — the recorder writes a fresh numbered directory each run.
+
 `--teleop_device so101leader --port /dev/ttyACM0` drives it from the physical leader arm
-instead. Both single-arm choices are correct here; the `bi-` variants are rejected by
+instead, and `keyboard` still works. The `bi-` variants are rejected by
 `validate_task_and_device` because the task id has no `Bi` in it.
 
-**Press `B` before anything else.** `Device.advance()` returns `None` until it sees `B`
-(`if not action["started"]: return None`), and the record loop then feeds a hold-position
-action instead — the arm sits still no matter which movement key you press.
+### 2. Check the recording — before anything else
+
+```bash
+$V/bin/python scripts/check_dataset.py Datasets/record/ring_insert/002
+```
+
+It must print `looks good`. This exists because a 20-episode dataset was recorded,
+converted, pushed and trained on (2 h of GPU) before anyone noticed `observation.state`
+never changed. It checks:
+
+| check | what it caught |
+|---|---|
+| state varies per episode | `_get_observations` returned numpy **views** onto live sim buffers, so every frame aliased one array and held the final step's values |
+| state correlates with action | 0.22 on the broken data, 1.00 on good data |
+| gripper travel | a pick task where the gripper never moved |
+| video motion | run_eval recorded perfect states beside footage frozen at the reset frame |
+
+Pass `--min-gripper-travel 0` when checking *rollouts* — a policy that fails to grasp is
+a legitimate rollout, not a broken recording.
+
+### 3. Convert v2.1 → v3.0
+
+```bash
+$V/bin/python scripts/convert_dataset_v30.py Datasets/record/ring_insert/002
+```
+
+Isaac Sim pins lerobot 0.3.3 (newer needs numpy≥2, `isaacsim-kernel` pins numpy==1.26.0),
+so the recorder writes v2.1 while training needs v3.0. lerobot's own converter fails three
+ways here — a `datasets`/pandas dtype bug, an arrow write error on 2-D depth, and it reads
+the version from the Hub rather than `--root`. This wraps it with those patched.
+
+Converts **in place**: the v3.0 result takes the original path, the v2.1 original moves to
+`002_old`. Do not run it twice on the same directory.
+
+### 4. Merge batches
+
+```bash
+$V/bin/python - <<'PY'
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.dataset_tools import merge_datasets
+parts = [LeRobotDataset(repo_id=f"local/{n}", root=f"Datasets/record/ring_insert/{n}")
+         for n in ("002", "003")]
+merged = merge_datasets(parts, output_repo_id="witsense-ai/synthetic_so101_ring_insert",
+                        output_dir="Datasets/record/ring_insert/merged_40")
+print(merged.num_episodes, "episodes,", merged.num_frames, "frames")
+PY
+```
+
+### 5. Push to the Hub
+
+```bash
+export HF_TOKEN=$(cat ~/.cache/huggingface/token)
+$V/bin/python - <<'PY'
+import os
+from huggingface_hub import HfApi
+api = HfApi(token=os.environ["HF_TOKEN"])
+REPO = "witsense-ai/synthetic_so101_ring_insert"
+api.upload_folder(folder_path="Datasets/record/ring_insert/merged_40",
+                  repo_id=REPO, repo_type="dataset",
+                  delete_patterns=["data/**", "videos/**", "meta/**"])
+refs = api.list_repo_refs(REPO, repo_type="dataset")
+main = refs.branches[0].target_commit
+for t in refs.tags:
+    if t.name == "v3.0" and t.target_commit != main:
+        api.delete_tag(REPO, tag="v3.0", repo_type="dataset")
+        api.create_tag(REPO, tag="v3.0", revision="main", repo_type="dataset")
+PY
+```
+
+Two things bite here:
+
+- **`delete_patterns`** — v3.0 chunk filenames do not overlap v2.1 ones, so a plain upload
+  leaves both layouts in the repo and the loader trips over the old one.
+- **The version tag.** lerobot reads the dataset format from a **git tag**, not from
+  `meta/info.json`. A repo whose files are v3.0 but whose tag says `v2.1` still fails with
+  `BackwardCompatibilityError`, and no amount of re-uploading fixes it.
+
+`HF_TOKEN` is set explicitly because `.env` points `HF_HOME` at the dataset cache, a
+directory with no token in it, so a perfectly good `hf auth login` goes unseen. A private
+dataset then fails with a misleading `401 … Repository Not Found`.
+
+### 6. Train
+
+```bash
+bash scripts/train_act.sh smoke      # 60 steps, confirms it reads the dataset
+STEPS=50000 bash scripts/train_act.sh
+```
+
+~5 h for 50k steps on a 6 GB RTX 4050 at batch 4 (4.37 GB, 2.7 step/s). Keep
+steps×batch ÷ frames near 10–25 epochs; 50k over 8.7k frames is 23.
+
+### 7. Evaluate
+
+```bash
+python -m scripts.run_eval \
+  --checkpoint outputs/train/<run>/checkpoints/last/pretrained_model \
+  --enable_cameras --device cpu --num_episodes 20 --max_steps 400 --debug
+```
+
+`--debug` writes `trace_ep*.csv` (commanded vs measured joints, end effector, object
+positions, progress) and camera frames to `outputs/sim_frames/`, beside the real dataset's
+frames in `outputs/real_frames/` for comparison.
+
+Reported per episode: `success` (binary, `_get_success`) and `progress` (continuous, see
+`insertion_progress` — 0.5 for reaching the ghost, ~0.9 seated). Progress is what
+separates a near miss from a rollout that never touched the ring.
+
+Units and camera keys are read from the checkpoint, so a policy trained on the real robot
+(degrees, `observation.images.top`) and one trained in sim (radians, `..._top_rgb`) both
+run without flags.
+
+### 8. Collect rollouts
+
+```bash
+python -m scripts.run_eval \
+  --checkpoint outputs/train/<run>/checkpoints/last/pretrained_model \
+  --enable_cameras --device cpu --num_episodes 100 --max_steps 400 --record \
+  --out outputs/rollouts_run1
+
+$V/bin/python scripts/check_dataset.py outputs/rollouts_run1/dataset --min-gripper-travel 0
+```
+
+~2.5 min/episode, so 100 ≈ 4 h. Chain the two with `&&` after a 3-episode verify run so a
+dead-camera bug stops the batch instead of wasting the night. Run under `tmux`.
+
+### 9. Filter, then back to step 4
+
+```bash
+$V/bin/python scripts/convert_dataset_v30.py outputs/rollouts_run1/dataset
+$V/bin/python scripts/filter_rollouts.py outputs/rollouts_run1 --min-progress 0.5
+```
+
+Keeps successes, plus near-misses above the progress threshold, using lerobot's
+`delete_episodes`. Merge the result with the demonstrations (step 4) and retrain (step 6)
+— that is filtered behaviour cloning, the simplest form of the flywheel. Re-evaluate and
+compare success against the previous number; if it does not move, more machinery
+(a success head, best-of-N, advantages) will not help either.
+
+### Teleoperation controls
+
+**Press start before anything else** — `B` on the keyboard, `A` on the gamepad.
+`Device.advance()` returns `None` until it sees it, and the record loop feeds a
+hold-position action instead, so the arm sits still whatever else you press.
+
+| | keyboard | gamepad |
+|---|---|---|
+| shoulder_pan | `T`/`G` | left stick ←→ |
+| shoulder_lift | `Y`/`H` | left stick ↑↓ |
+| elbow_flex | `U`/`J` | right stick ↑↓ |
+| wrist_flex | `I`/`K` | right stick ←→ |
+| wrist_roll | `O`/`L` | D-pad ←→ |
+| gripper | `Q`/`A` | RT open / LT close |
+| start control | `B` | `A` |
+| start recording | `S` | `X` |
+| discard episode | `D` | `B` |
+| success + save | `N` | `Y` |
+
+The gamepad's vertical stick axes are **inverted on purpose**: a positive shoulder_lift or
+elbow_flex command lowers the gripper on this asset (measured — `+0.05` moved the jaw from
+z 0.617 to 0.608), and since the action is `current_position + delta`, binding stick-up to
+positive made the arm sink for as long as the stick was held.
 
 The two key sets go through different input systems, which is why some keys work from the
 terminal and some do not:
@@ -239,8 +460,8 @@ Do the first episode without `--enable_record` to check reach and framing. `ring
 `ghost_pos` and `ring_xy_jitter` are guesses; an unreachable ring or an off-frame ghost
 is much cheaper to find now than after fifty episodes.
 
-`TABLE_Z = 0.5` comes from the bimanual task: both arm bases sit at that height and the
-garment settles onto the same surface.
+`TABLE_Z = 0.521` is measured from Table038's world bounding box, not inherited from the
+bimanual task — see "Geometry" above.
 
 ## Record / replay in sim
 
