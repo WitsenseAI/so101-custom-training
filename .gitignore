@@ -48,3 +48,7 @@ __pycache__/
 Datasets/*
 outputs/*
 
+
+# Local venv and caches (see .env)
+.venv/
+.cache/

@@ -11,7 +11,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 [ -f .env ] || { echo "ERROR: no .env. Run: cp .env.example .env" >&2; exit 1; }
 set -a; source .env; set +a
-source "${LEROBOT_VENV:-$HOME/.venvs/lerobot}/bin/activate"
+source "${LEROBOT_VENV:-$ROOT_DIR/.venv}/bin/activate"
 
 EPISODES="${1:-50}"
 : "${DATASET_REPO:?set DATASET_REPO in .env}"

@@ -317,13 +317,7 @@ def main() -> None:
     if args.record:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-        # Same schema the teleop harness writes, so rollouts and demonstrations merge.
-        # Image shapes come from the cameras rather than being repeated as literals —
-        # they differ per camera (top 480x640, wrist 720x1280) and a mismatch here is
-        # only caught deep inside lerobot's frame validation.
-        # These must match scripts/utils/dataset_record.py EXACTLY, or lerobot's
-        # merge_datasets refuses to combine rollouts with demonstrations:
-        # validate_all_metadata compares the whole feature dict, names included.
+      
         joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex",
                        "wrist_flex", "wrist_roll", "gripper"]
 

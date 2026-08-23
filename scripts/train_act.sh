@@ -32,7 +32,7 @@ fi
 
 : "${DATASET_REPO:?set DATASET_REPO in .env}"
 : "${HF_ORG:=witsense-ai}"
-: "${LEROBOT_VENV:=$HOME/.venvs/lerobot}"
+: "${LEROBOT_VENV:=$ROOT_DIR/.venv}"
 : "${STEPS:=50000}"; : "${BATCH_SIZE:=4}"; : "${NUM_WORKERS:=4}"; : "${SEED:=1000}"
 : "${SAVE_FREQ:=2000}"; : "${LOG_FREQ:=200}"
 : "${PUSH_TO_HUB:=false}"; : "${PUSH_PRIVATE:=true}"
