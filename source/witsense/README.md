@@ -69,7 +69,6 @@ ghost on the table.
 
 **Run everything from the repo root.** Asset paths are resolved relative to the working
 directory.
-
 ---
 
 ## The task

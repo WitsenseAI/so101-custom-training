@@ -19,5 +19,21 @@ MUSHR_ACTUATOR_CFG={
         stiffness= 0.0,
         damping= 1000.0,
         friction= 0.0,
+    ),
+}
+
+MUSHR_SUS_ACTUATORS_CFG = { #thsi is for the 4wd drive
+    **MUSHR_ACTUATOR_CFG,
+    "suspension": ImplicitActuatorCfg (
+        joint_names_expr= [".*_suspension"],
+        effort_limit= None,
+        velocity_limit= None,
+        stiffness= 1e8,
+        damping =  0.,
+        friction= 0.5,
+
+
     )
+
+
 }

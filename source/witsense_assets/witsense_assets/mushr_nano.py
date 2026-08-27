@@ -2,6 +2,7 @@
 
 from isaaclab.assets import ArticulationCfg
 import isaaclab.sim as sim_utils
+from .actuators import MUSHR_SUS_ACTUATORS_CFG
 
 from . import MAIN_ASSETS_DIR
 
@@ -43,6 +44,7 @@ MUSHR_SUS_CFG= ArticulationCfg(
         )
     ),
     init_state= _ZERO_INIT_STATES,
+    actuators= MUSHR_SUS_ACTUATORS_CFG
     
 
 )
