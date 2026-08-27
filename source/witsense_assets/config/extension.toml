@@ -11,7 +11,7 @@ title = "witsense isaac lab assests"
 author = "Witsense Developers "
 maintainer = "Witsense Developers"
 description="Extension Template for Isaac Lab"
-repository = "https://github.com/isaac-sim/IsaacLab.git"
+repository = "https://github.com/WitsenseAI/so101-custom-training.git"
 keywords = ["extension", "template", "isaaclab"]
 
 [dependencies]

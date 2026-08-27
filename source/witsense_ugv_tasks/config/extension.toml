@@ -11,7 +11,7 @@ title = "Witsense UGV Lab Tasks"
 author = "Witsense UGV Lab Project Developers"
 maintainer = "Witsense UGV Lab Project Developers"
 description= "Isaac Lab for Witsense UGV Robots"
-repository = "https://github.com/UWRobotLearning/WheeledLab"
+repository = "https://github.com/WitsenseAI/so101-custom-training.git"
 keywords = ["extension", "isaaclab"]
 
 [dependencies]
