@@ -1,5 +1,5 @@
 import torch
-from isaaclab.sim import sim_utils
+import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
 from isaaclab.managers import (
     EventTermCfg as EventTerm,
@@ -13,14 +13,19 @@ from isaaclab.managers import (
 from isaaclab.utils import configclass
 from isaaclab.assets import AssetBaseCfg, ArticulationCfg
 from isaaclab.terrains import TerrainImporterCfg
-from isaaclab.scenes import InteractiveSceneCfg
+from isaaclab.scene import InteractiveSceneCfg
 
 from isaaclab.sensors import RayCasterCfg, patterns
 import isaaclab.envs.mdp as mdp
-from isaaclab.envs import ManagerBasedEnv
+from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnvCfg
 
+
+from isaaclab.envs.mdp.commands import UniformPose2dCommandCfg
+from isaaclab.envs.mdp.events import reset_root_state_uniform
 
 from witsense_ugv.envs.mdp.observations import root_euler_xyz
+from witsense_ugv.envs.mdp import increase_reward_weight_over_time
+from witsense_ugv_tasks.common import Mushr4WDActionCfg
 from witsense_assets import MAIN_ASSETS_DIR
 from witsense_assets.mushr_nano import  MUSHR_SUS_CFG
 
@@ -77,13 +82,13 @@ class ElevationObsCfg:
 @configclass
 class ElevationTerrainImporterCfg(TerrainImporterCfg):
     height= 0.25
-    prim_Path= "World/elevation"
+    prim_path= "/World/elevation"
     terrain_type= "usd"
     usd_path= f"{MAIN_ASSETS_DIR}/terrains/huge_compact.usd"
     collision_group= -1
     physics_material= sim_utils.RigidBodyMaterialCfg(
         friction_combine_mode= 'multiply',
-        restituyion_combine_mode= 'multiply',
+        restitution_combine_mode= 'multiply',
         static_friction= 1.0,
         dynamic_friction= 1.0,
     )

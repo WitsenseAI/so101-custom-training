@@ -35,10 +35,13 @@ MUSHR_SUS_CFG= ArticulationCfg(
             enable_gyroscopic_forces= True,
 
         ),
-        articulation_props= sim_utils.ArticulationPropertiesCfg(
+        articulation_props= sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions= False,
             solver_position_iteration_count=4,
-            solver_velocity_iteration_count= 4,
+            # 0, not 4: upstream WheeledLab runs this asset at 0 for thousands of
+            # iterations. With 4, the TGS solver hung inside PhysX after ~20 min of
+            # wall clock (py-spy: blocked in physics_context._step, GPU pinned at 100%).
+            solver_velocity_iteration_count= 0,
             sleep_threshold= 0.005,
             stabilization_threshold= 0.001,
         )

@@ -1,18 +1,25 @@
-import os 
+import os
 import toml
-from setuptools import setup
 
-EXTENSION_EXT_DIR= os.path.dirname(os.path.realpath(__file__))
+from setuptools import setup, find_packages
 
-EXTENSION_TOML_DATA= toml.load(os.path.join(EXTENSION_EXT_DIR, "config", "extension.toml"))
 
+EXTENSION_PATH = os.path.dirname(os.path.realpath(__file__))
+EXTENSION_TOML_DATA = toml.load(os.path.join(EXTENSION_PATH, "config", "extension.toml"))
+
+
+# NOTE: upstream wheeledlab_rl also pins gymnasium==1.0.0. That is left out on purpose:
+# isaaclab requires gymnasium==1.2.1, and installing this package must not downgrade it.
 INSTALL_REQUIRES = [
     "psutil",
+    "rich",
+    "av",
+    "rsl-rl-lib>=2.3.0",
 ]
 
 setup(
-    name="witsense_ugv_tasks",
-    packages=["witsense_ugv_tasks"],
+    name="witsense_ugv_rl",
+    packages=find_packages(include=["witsense_ugv_rl", "witsense_ugv_rl.*"]),
     author=EXTENSION_TOML_DATA["package"]["author"],
     maintainer=EXTENSION_TOML_DATA["package"]["maintainer"],
     url=EXTENSION_TOML_DATA["package"]["repository"],

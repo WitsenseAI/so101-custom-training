@@ -52,3 +52,7 @@ outputs/*
 # Local venv and caches (see .env)
 .venv/
 .cache/
+
+source/witsense_ugv_rl/logs
+
+source/witsense_ugv_rl/outputs

@@ -23,7 +23,7 @@ keywords = ["extension", "isaaclab"]
 # NOTE: Add additional dependencies here
 
 [[python.module]]
-name = "witsense_ugv_tasks"
+name = "witsense_ugv_rl"
 
 [isaaclab_settings]
 # TODO: Uncomment and list any apt dependencies here.

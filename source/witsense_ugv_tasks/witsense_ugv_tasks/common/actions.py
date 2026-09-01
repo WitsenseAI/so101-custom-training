@@ -10,7 +10,7 @@ class Mushr4WDActionCfg:
             "back_left_wheel_throttle",
             "back_right_wheel_throttle",
             "front_left_wheel_throttle",
-            "front_right_wheeel_throttle",
+            "front_right_wheel_throttle",
         ],
         steering_joint_names= [
             "front_left_wheel_steer",
@@ -19,10 +19,10 @@ class Mushr4WDActionCfg:
         ],
         base_length= 0.325,
         base_width= 0.2,
-        wheel_radious= 0.05,
+        wheel_radius= 0.05,
         scale= (3.0, 0.488),
         no_reverse= True,
         bounding_strategy= "clip",
-        assest_name= "robot",
+        asset_name= "robot",
 
     )
